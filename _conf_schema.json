@@ -1,0 +1,1095 @@
+{
+  "supabase_url": {
+    "description": "数据源1(Supabase) REST API地址",
+    "type": "string",
+    "default": "https://dtwqqcetisagubdwwdtf.supabase.co",
+    "group": "数据源"
+  },
+  "supabase_anon_key": {
+    "description": "数据源1(Supabase) anon key（如需直连 REST API，联系网站管理员申请获取；留空=使用内置默认密钥）",
+    "type": "string",
+    "default": "",
+    "invisible": true,
+    "group": "数据源"
+  },
+  "source1_api_key": {
+    "description": "数据源1 x-api-key（中间件认证，联系酸奶很忙管理员获取）",
+    "type": "string",
+    "default": "",
+    "group": "数据源"
+  },
+  "hok_api_url": {
+    "description": "数据源2(HOK站) API地址",
+    "type": "string",
+    "default": "https://hokshijie.online:5000",
+    "group": "数据源"
+  },
+  "enable_source1": {
+    "description": "启用数据源1 (jusuo.playmmo.cn)",
+    "type": "bool",
+    "default": true,
+    "group": "数据源"
+  },
+  "enable_source2": {
+    "description": "启用数据源2 (hokshijie.online)",
+    "type": "bool",
+    "default": true,
+    "group": "数据源"
+  },
+  "wsjj_api_url": {
+    "description": "数据源3(家园站) API地址",
+    "type": "string",
+    "default": "https://wsjjiayuan.cn",
+    "group": "数据源"
+  },
+  "enable_source3": {
+    "description": "启用数据源3 (wsjjiayuan.cn · 作者抖音黑土豆)",
+    "type": "bool",
+    "default": true,
+    "group": "数据源"
+  },
+  "hok_items_limit": {
+    "description": "数据源2(HOK) 单次查询最大条数，默认200",
+    "type": "int",
+    "default": 200,
+    "group": "数据源"
+  },
+  "admin_qqs": {
+    "description": "管理员QQ号（逗号分隔），仅管理员可通过聊天指令设置自定义回复内容",
+    "type": "string",
+    "default": "",
+    "group": "全局回复设置"
+  },
+  "whitelist_crop_detect": {
+    "description": "全局默认：检测到作物名自动查询高倍信息（各群可独立覆盖）",
+    "type": "bool",
+    "default": true,
+    "group": "全局回复设置"
+  },
+  "whitelist_at_reply": {
+    "description": "全局默认：@机器人自动回复使用指南/自定义内容（各群可独立覆盖）",
+    "type": "bool",
+    "default": true,
+    "group": "全局回复设置"
+  },
+  "whitelist_merchant_reply": {
+    "description": "全局默认：检测到\"商人\"关键词自动回复（各群可独立覆盖）",
+    "type": "bool",
+    "default": true,
+    "group": "全局回复设置"
+  },
+  "recall_seconds": {
+    "description": "查询结果自动撤回秒数（0=不撤回，仅QQ群生效；默认30秒）",
+    "type": "int",
+    "default": 30,
+    "hint": "设为0则不撤回。仅QQ群adapter直发路径支持撤回，微信等平台不生效。",
+    "group": "全局回复设置"
+  },
+  "polling_enabled": {
+    "description": "开启轮询播报（自动扫描高价收购，达阈值时推送播报）",
+    "type": "bool",
+    "default": false,
+    "group": "全局轮询播报"
+  },
+  "poll_interval_minutes": {
+    "description": "轮询间隔（分钟），默认3分钟扫描一次",
+    "type": "int",
+    "default": 3,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_炎霞辣椒": {
+    "description": "全局监控：炎霞辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_灿金云棉": {
+    "description": "全局监控：灿金云棉",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_曳紫云棉": {
+    "description": "全局监控：曳紫云棉",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_旭日辣椒": {
+    "description": "全局监控：旭日辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_胭纱云棉": {
+    "description": "全局监控：胭纱云棉",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_星夜龙眼": {
+    "description": "全局监控：星夜龙眼",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_crop_蝶影莲子": {
+    "description": "全局监控：蝶影莲子",
+    "type": "bool",
+    "default": true,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_炎霞辣椒": {
+    "description": "播报阈值：炎霞辣椒（百工币）",
+    "type": "int",
+    "default": 500000,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_灿金云棉": {
+    "description": "播报阈值：灿金云棉（百工币）",
+    "type": "int",
+    "default": 1000000,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_曳紫云棉": {
+    "description": "播报阈值：曳紫云棉（百工币）",
+    "type": "int",
+    "default": 2000000,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_旭日辣椒": {
+    "description": "播报阈值：旭日辣椒（百工币）",
+    "type": "int",
+    "default": 3000000,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_胭纱云棉": {
+    "description": "播报阈值：胭纱云棉（百工币）",
+    "type": "int",
+    "default": 4000000,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_星夜龙眼": {
+    "description": "播报阈值：星夜龙眼（百工币）",
+    "type": "int",
+    "default": 6500000,
+    "group": "全局轮询播报"
+  },
+  "poll_threshold_蝶影莲子": {
+    "description": "播报阈值：蝶影莲子（百工币）",
+    "type": "int",
+    "default": 8000000,
+    "group": "全局轮询播报"
+  },
+  "group_config_1": {
+    "description": "群聊配置 1（填群号启用，留空不启用）",
+    "type": "object",
+    "hint": "第1个群的独立配置，展开后填写群号及各项开关。未设置项自动继承全局默认",
+    "items": {
+      "group_id": {
+        "description": "群号",
+        "type": "string",
+        "default": "",
+        "hint": "填入QQ群号启用此群配置，留空则不启用"
+      },
+      "crop_detect": {
+        "description": "作物名自动查询",
+        "type": "bool",
+        "default": true
+      },
+      "at_reply": {
+        "description": "@机器人自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "merchant_reply": {
+        "description": "商人关键词自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "custom_reply": {
+        "description": "自定义回复内容（留空用全局默认指南）",
+        "type": "text",
+        "default": ""
+      },
+      "polling_enabled": {
+        "description": "接收高价播报推送",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source1": {
+        "description": "启用数据源1（网站一）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source2": {
+        "description": "启用数据源2（HOK站）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source3": {
+        "description": "启用数据源3（家园站）",
+        "type": "bool",
+        "default": true
+      },
+      "crops": {
+        "description": "监控作物（多选，留空则全部监控）",
+        "type": "list",
+        "options": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "default": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "hint": "选择此群要监控高价播报的作物，默认全选"
+      }
+    }
+  },
+  "group_config_2": {
+    "description": "群聊配置 2（填群号启用，留空不启用）",
+    "type": "object",
+    "hint": "第2个群的独立配置，展开后填写群号及各项开关。未设置项自动继承全局默认",
+    "items": {
+      "group_id": {
+        "description": "群号",
+        "type": "string",
+        "default": "",
+        "hint": "填入QQ群号启用此群配置，留空则不启用"
+      },
+      "crop_detect": {
+        "description": "作物名自动查询",
+        "type": "bool",
+        "default": true
+      },
+      "at_reply": {
+        "description": "@机器人自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "merchant_reply": {
+        "description": "商人关键词自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "custom_reply": {
+        "description": "自定义回复内容（留空用全局默认指南）",
+        "type": "text",
+        "default": ""
+      },
+      "polling_enabled": {
+        "description": "接收高价播报推送",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source1": {
+        "description": "启用数据源1（网站一）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source2": {
+        "description": "启用数据源2（HOK站）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source3": {
+        "description": "启用数据源3（家园站）",
+        "type": "bool",
+        "default": true
+      },
+      "crops": {
+        "description": "监控作物（多选，留空则全部监控）",
+        "type": "list",
+        "options": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "default": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "hint": "选择此群要监控高价播报的作物，默认全选"
+      }
+    }
+  },
+  "group_config_3": {
+    "description": "群聊配置 3（填群号启用，留空不启用）",
+    "type": "object",
+    "hint": "第3个群的独立配置，展开后填写群号及各项开关。未设置项自动继承全局默认",
+    "items": {
+      "group_id": {
+        "description": "群号",
+        "type": "string",
+        "default": "",
+        "hint": "填入QQ群号启用此群配置，留空则不启用"
+      },
+      "crop_detect": {
+        "description": "作物名自动查询",
+        "type": "bool",
+        "default": true
+      },
+      "at_reply": {
+        "description": "@机器人自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "merchant_reply": {
+        "description": "商人关键词自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "custom_reply": {
+        "description": "自定义回复内容（留空用全局默认指南）",
+        "type": "text",
+        "default": ""
+      },
+      "polling_enabled": {
+        "description": "接收高价播报推送",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source1": {
+        "description": "启用数据源1（网站一）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source2": {
+        "description": "启用数据源2（HOK站）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source3": {
+        "description": "启用数据源3（家园站）",
+        "type": "bool",
+        "default": true
+      },
+      "crops": {
+        "description": "监控作物（多选，留空则全部监控）",
+        "type": "list",
+        "options": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "default": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "hint": "选择此群要监控高价播报的作物，默认全选"
+      }
+    }
+  },
+  "group_config_4": {
+    "description": "群聊配置 4（填群号启用，留空不启用）",
+    "type": "object",
+    "hint": "第4个群的独立配置，展开后填写群号及各项开关。未设置项自动继承全局默认",
+    "items": {
+      "group_id": {
+        "description": "群号",
+        "type": "string",
+        "default": "",
+        "hint": "填入QQ群号启用此群配置，留空则不启用"
+      },
+      "crop_detect": {
+        "description": "作物名自动查询",
+        "type": "bool",
+        "default": true
+      },
+      "at_reply": {
+        "description": "@机器人自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "merchant_reply": {
+        "description": "商人关键词自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "custom_reply": {
+        "description": "自定义回复内容（留空用全局默认指南）",
+        "type": "text",
+        "default": ""
+      },
+      "polling_enabled": {
+        "description": "接收高价播报推送",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source1": {
+        "description": "启用数据源1（网站一）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source2": {
+        "description": "启用数据源2（HOK站）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source3": {
+        "description": "启用数据源3（家园站）",
+        "type": "bool",
+        "default": true
+      },
+      "crops": {
+        "description": "监控作物（多选，留空则全部监控）",
+        "type": "list",
+        "options": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "default": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "hint": "选择此群要监控高价播报的作物，默认全选"
+      }
+    }
+  },
+  "group_config_5": {
+    "description": "群聊配置 5（填群号启用，留空不启用）",
+    "type": "object",
+    "hint": "第5个群的独立配置，展开后填写群号及各项开关。未设置项自动继承全局默认",
+    "items": {
+      "group_id": {
+        "description": "群号",
+        "type": "string",
+        "default": "",
+        "hint": "填入QQ群号启用此群配置，留空则不启用"
+      },
+      "crop_detect": {
+        "description": "作物名自动查询",
+        "type": "bool",
+        "default": true
+      },
+      "at_reply": {
+        "description": "@机器人自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "merchant_reply": {
+        "description": "商人关键词自动回复",
+        "type": "bool",
+        "default": true
+      },
+      "custom_reply": {
+        "description": "自定义回复内容（留空用全局默认指南）",
+        "type": "text",
+        "default": ""
+      },
+      "polling_enabled": {
+        "description": "接收高价播报推送",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source1": {
+        "description": "启用数据源1（网站一）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source2": {
+        "description": "启用数据源2（HOK站）",
+        "type": "bool",
+        "default": true
+      },
+      "enable_source3": {
+        "description": "启用数据源3（家园站）",
+        "type": "bool",
+        "default": true
+      },
+      "crops": {
+        "description": "监控作物（多选，留空则全部监控）",
+        "type": "list",
+        "options": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "default": [
+          "炎霞辣椒",
+          "灿金云棉",
+          "曳紫云棉",
+          "旭日辣椒",
+          "胭纱云棉",
+          "星夜龙眼",
+          "蝶影莲子"
+        ],
+        "hint": "选择此群要监控高价播报的作物，默认全选"
+      }
+    }
+  },
+  "group1_id": {
+    "description": "群号（填入启用此群，留空不启用）",
+    "type": "string",
+    "default": "",
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_detect": {
+    "description": "作物名自动查询",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_at_reply": {
+    "description": "@机器人自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_merchant_reply": {
+    "description": "商人关键词自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_custom_reply": {
+    "description": "自定义回复内容（留空用全局默认指南）",
+    "type": "string",
+    "default": "",
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_polling_enabled": {
+    "description": "接收高价播报推送",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_enable_source1": {
+    "description": "启用数据源1（网站一）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_enable_source2": {
+    "description": "启用数据源2（HOK站）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_炎霞辣椒": {
+    "description": "监控：炎霞辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_灿金云棉": {
+    "description": "监控：灿金云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_曳紫云棉": {
+    "description": "监控：曳紫云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_旭日辣椒": {
+    "description": "监控：旭日辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_胭纱云棉": {
+    "description": "监控：胭纱云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_星夜龙眼": {
+    "description": "监控：星夜龙眼",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group1_crop_蝶影莲子": {
+    "description": "监控：蝶影莲子",
+    "type": "bool",
+    "default": true,
+    "group": "群配置1(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_id": {
+    "description": "群号（填入启用此群，留空不启用）",
+    "type": "string",
+    "default": "",
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_detect": {
+    "description": "作物名自动查询",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_at_reply": {
+    "description": "@机器人自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_merchant_reply": {
+    "description": "商人关键词自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_custom_reply": {
+    "description": "自定义回复内容（留空用全局默认指南）",
+    "type": "string",
+    "default": "",
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_polling_enabled": {
+    "description": "接收高价播报推送",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_enable_source1": {
+    "description": "启用数据源1（网站一）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_enable_source2": {
+    "description": "启用数据源2（HOK站）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_炎霞辣椒": {
+    "description": "监控：炎霞辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_灿金云棉": {
+    "description": "监控：灿金云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_曳紫云棉": {
+    "description": "监控：曳紫云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_旭日辣椒": {
+    "description": "监控：旭日辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_胭纱云棉": {
+    "description": "监控：胭纱云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_星夜龙眼": {
+    "description": "监控：星夜龙眼",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group2_crop_蝶影莲子": {
+    "description": "监控：蝶影莲子",
+    "type": "bool",
+    "default": true,
+    "group": "群配置2(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_id": {
+    "description": "群号（填入启用此群，留空不启用）",
+    "type": "string",
+    "default": "",
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_detect": {
+    "description": "作物名自动查询",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_at_reply": {
+    "description": "@机器人自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_merchant_reply": {
+    "description": "商人关键词自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_custom_reply": {
+    "description": "自定义回复内容（留空用全局默认指南）",
+    "type": "string",
+    "default": "",
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_polling_enabled": {
+    "description": "接收高价播报推送",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_enable_source1": {
+    "description": "启用数据源1（网站一）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_enable_source2": {
+    "description": "启用数据源2（HOK站）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_炎霞辣椒": {
+    "description": "监控：炎霞辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_灿金云棉": {
+    "description": "监控：灿金云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_曳紫云棉": {
+    "description": "监控：曳紫云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_旭日辣椒": {
+    "description": "监控：旭日辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_胭纱云棉": {
+    "description": "监控：胭纱云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_星夜龙眼": {
+    "description": "监控：星夜龙眼",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group3_crop_蝶影莲子": {
+    "description": "监控：蝶影莲子",
+    "type": "bool",
+    "default": true,
+    "group": "群配置3(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_id": {
+    "description": "群号（填入启用此群，留空不启用）",
+    "type": "string",
+    "default": "",
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_detect": {
+    "description": "作物名自动查询",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_at_reply": {
+    "description": "@机器人自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_merchant_reply": {
+    "description": "商人关键词自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_custom_reply": {
+    "description": "自定义回复内容（留空用全局默认指南）",
+    "type": "string",
+    "default": "",
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_polling_enabled": {
+    "description": "接收高价播报推送",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_enable_source1": {
+    "description": "启用数据源1（网站一）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_enable_source2": {
+    "description": "启用数据源2（HOK站）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_炎霞辣椒": {
+    "description": "监控：炎霞辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_灿金云棉": {
+    "description": "监控：灿金云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_曳紫云棉": {
+    "description": "监控：曳紫云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_旭日辣椒": {
+    "description": "监控：旭日辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_胭纱云棉": {
+    "description": "监控：胭纱云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_星夜龙眼": {
+    "description": "监控：星夜龙眼",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group4_crop_蝶影莲子": {
+    "description": "监控：蝶影莲子",
+    "type": "bool",
+    "default": true,
+    "group": "群配置4(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_id": {
+    "description": "群号（填入启用此群，留空不启用）",
+    "type": "string",
+    "default": "",
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_detect": {
+    "description": "作物名自动查询",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_at_reply": {
+    "description": "@机器人自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_merchant_reply": {
+    "description": "商人关键词自动回复",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_custom_reply": {
+    "description": "自定义回复内容（留空用全局默认指南）",
+    "type": "string",
+    "default": "",
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_polling_enabled": {
+    "description": "接收高价播报推送",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_enable_source1": {
+    "description": "启用数据源1（网站一）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_enable_source2": {
+    "description": "启用数据源2（HOK站）",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_炎霞辣椒": {
+    "description": "监控：炎霞辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_灿金云棉": {
+    "description": "监控：灿金云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_曳紫云棉": {
+    "description": "监控：曳紫云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_旭日辣椒": {
+    "description": "监控：旭日辣椒",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_胭纱云棉": {
+    "description": "监控：胭纱云棉",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_星夜龙眼": {
+    "description": "监控：星夜龙眼",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "group5_crop_蝶影莲子": {
+    "description": "监控：蝶影莲子",
+    "type": "bool",
+    "default": true,
+    "group": "群配置5(旧·迁移用)",
+    "invisible": true
+  },
+  "snowluma_newline_fix": {
+    "description": "SnowLuma群聊换行修复（全局拦截所有插件消息，修复\\n不换行问题）",
+    "type": "bool",
+    "default": false,
+    "group": "高级"
+  }
+}

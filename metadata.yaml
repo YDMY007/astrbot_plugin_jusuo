@@ -1,0 +1,13 @@
+name: "jusuo"
+desc: "王者荣耀世界居所助手查询插件，支持查询居所内的作物收购、商人分享、建造模板、交友墙等信息"
+author: "亭子ww"
+version: "1.12"
+repo: "https://github.com/YDMY007/astrbot_plugin_jusuo"
+display_name: "王世杰居所助手"
+logo: "https://picui.cn/thumbnails/ef0288ab783aa6483b7b3d618c966f83.png"
+short_desc: "王者荣耀世界居所助手，三源查询作物收购等信息"
+support_platforms:
+  - aiocqhttp
+  - telegram
+  - qq_official
+  - qq_official_webhook
