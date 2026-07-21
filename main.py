@@ -82,6 +82,14 @@ KNOWN_CROPS = [
 ]
 KNOWN_MERCHANTS = ["芍药", "紫翠", "虎头", "金靡", "鱼丞相"]
 
+# 动物催产提醒模式配置：cycle_h=动物产出周期(小时)，offset_h=订阅后首次提醒倒计时(小时)
+ANIMAL_MODES = {
+    "exp":  {"name": "经验动物", "cycle_h": 12, "offset_h": 12},
+    "gold": {"name": "金币动物", "cycle_h": 15, "offset_h": 15},
+    # 调试模式：10 秒一次性提醒（offset_sec 优先于 offset_h；cycle_h=0 表示不循环）
+    "test": {"name": "测试", "cycle_h": 0, "offset_h": 0, "offset_sec": 10},
+}
+
 # 商人家具本地缓存：{商人名: {品质: [家具列表]}}
 MERCHANT_FURNITURE_MAP: dict[str, dict[str, list[str]]] = {
     "芍药": {
@@ -159,7 +167,11 @@ class JusuoPlugin(Star):
         self._cache_time: float = 0
         # 源1 API 短期缓存 & 频率控制（200次/小时限流保护）
         self._source1_result_cache: dict = {}  # {cache_key: (data, timestamp)}
-        self._source1_cache_ttl: float = 60.0   # 缓存60秒
+        self._source1_cache_ttl: float = 0.0   # 无缓存，每次实时查询
+        # 源2/源3 按作物结果缓存：重复查询直接命中，跳过联网（热门作物/重复问/相邻轮询场景提速明显）
+        self._hok_items_cache: dict = {}  # crop_name -> (items, timestamp)
+        self._wsjj_items_cache: dict = {}  # crop_name -> (items, timestamp)
+        self._source23_cache_ttl: float = 0.0  # 无缓存，每次实时查询
         self._source1_last_call: float = 0.0
         self._source1_min_interval: float = 0.5  # 两次请求最小间隔0.5秒
         self.polling_enabled: bool = False
@@ -170,6 +182,7 @@ class JusuoPlugin(Star):
         self._qq_rate_limit_window: float = 600.0  # 10分钟
         self._qq_rate_limit_max: int = 3
         self._reported_2x_crops: set[str] = set()  # 已播报过的作物，避免重复播报
+        self._crop_inflight: set = set()  # 进行中的作物查询（去重用），元素为 (gid, 规范作物名)
         # 数据目录：使用 AstrBot 规范的插件数据目录（data/plugin_data/<name>/，独立于插件代码目录）
         # 更新/重装插件时不会清空该目录，查询统计等持久化数据得以保留
         self._data_dir = self._resolve_data_dir()
@@ -190,9 +203,16 @@ class JusuoPlugin(Star):
         # 数据自 version_date 起计算，不补旧；结构 {start_date, last_compute, uids:{uid:[period,...]}}
         self._录入_file = self._data_dir / "_录入_records.json"
         self._录入_records: dict = {"start_date": "2026-07-12", "last_compute": 0.0, "uids": {}}
+        # 动物催产提醒订阅（持久化，独立于插件代码目录，重装/重载不丢失）
+        self._animal_reminder_file = self._data_dir / "_animal_reminders.json"
+        self._animal_reminders: list = []
+        # 提醒指令自动检测到的白名单群（用户在哪个群发提醒指令，就自动把该群登记进白名单）
+        # 持久化，重装/重载/WebUI 改配置都不会丢失
+        self._animal_whitelist_file = self._data_dir / "_animal_whitelist.json"
+        self._auto_whitelist_groups: set[str] = self._load_auto_whitelist()
         # 若旧版本把数据写在插件目录内，迁移到规范数据目录（仅当新位置尚无数据时）
         self._migrate_legacy_data(self._data_dir)
-        self.version_date = "2026-07-12"  # 统计起始日期（自本版生效，不补旧数据）
+        self.version_date = "2026-07-21"  # 统计起始日期（自本版生效，不补旧数据）
         self._poll_thresholds: dict[str, int] = {}  # 每个作物的播报阈值（百工币）
         self.poll_crop_filter: set[str] = set(KNOWN_CROPS)  # 轮询播报作物勾选（默认全选）
         self.whitelist_groups: set[str] = set()
@@ -303,12 +323,22 @@ class JusuoPlugin(Star):
                 self._warned_empty_api_key = True
                 logger.warning("[居所] ⚠️ 数据源1 Supabase anon_key 未配置，请在WebUI中设置")
 
+        # 把提醒指令自动检测到的白名单群并入（无论是否传入 config 都执行：
+        # 配置槽位白名单 + 自动检测白名单，二者并集；重装/重载/WebUI 改配置都不会丢失）
+        if self._auto_whitelist_groups:
+            before = len(self.whitelist_groups)
+            self.whitelist_groups |= self._auto_whitelist_groups
+            if len(self.whitelist_groups) > before:
+                logger.info(f"[居所] 已并入 {len(self.whitelist_groups) - before} 个提醒指令自动检测到的白名单群")
+
         # 恢复已播报状态（防止重载后重复播报）
         self._load_poll_state()
         # 恢复历史最高价记录
         self._load_high_records()
         self._load_crop_query_counts()
         self._load_录入_records()
+        # 恢复动物催产提醒订阅（重装/重载后保留）
+        self._load_animal_reminders()
 
         # 异步加载牧场产品名缓存
         asyncio.ensure_future(self._load_ranch_presets())
@@ -321,6 +351,13 @@ class JusuoPlugin(Star):
 
         # 启动后台轮询
         self._start_background_polling()
+        # 启动动物催产提醒独立循环（不依赖高价轮播开关，随时检查到期提醒）
+        try:
+            loop = asyncio.get_running_loop()
+            self._animal_reminder_task = loop.create_task(self._animal_reminder_loop())
+            logger.info("[居所] 动物催产提醒循环已启动（每30秒检查到期）")
+        except RuntimeError:
+            logger.warning("[居所] 事件循环未运行，动物催产提醒将在首次请求时启动")
 
         # 注册插件页面 Web API（pages/dashboard 前端通过 bridge 调用）
         self._register_page_apis(context)
@@ -606,7 +643,7 @@ class JusuoPlugin(Star):
 
         # ── 组装 ──
         lines = [
-            f"📊 王世杰居所助手 v1.12",
+            f"📊 王世杰居所助手 v1.13",
             f"轮询播报 {_on(poll_on)} · 每{self.poll_interval_minutes}分钟 · 监控{len(self.poll_crop_filter)}种",
             "",
             "━━ 运行概览 ━━",
@@ -669,6 +706,43 @@ class JusuoPlugin(Star):
     # 使用 r".*" 匹配所有消息（AstrBot 中 r"." 可能只匹配单字符消息）
     _msg_handler_initialized: bool = False
 
+    # 动物催产提醒指令映射（白名单群内无需@即可触发，与作物名检测同机制）
+    # key=整条消息文本（精确匹配，非子串），value=(kind, mode)
+    ANIMAL_CMD_ALIASES = {
+        "经验动物提醒": ("subscribe", "exp"),
+        "经验动物": ("subscribe", "exp"),
+        "金币动物提醒": ("subscribe", "gold"),
+        "测试指令": ("subscribe", "test"),
+        "动物提醒查询": ("query", None),
+        "提醒查询": ("query", None),
+        "动物提醒": ("query_at", None),
+        "取消动物提醒": ("cancel", None),
+    }
+
+    def _match_animal_command(self, text: str):
+        """若整条消息完全等于某动物提醒指令（含模糊别名），返回路由元组，否则 None"""
+        return self.ANIMAL_CMD_ALIASES.get((text or "").strip())
+
+    async def _dispatch_animal_command(self, event: AstrMessageEvent, route):
+        """将动物提醒指令路由到对应处理方法（群消息监听内调用，无需@）"""
+        kind, mode = route
+        if kind == "subscribe":
+            async for m in self._subscribe_animal(event, mode):
+                yield m
+        elif kind == "query":
+            async for m in self._do_query_animal(event):
+                yield m
+        elif kind == "query_at":
+            async for m in self._do_query_animal(event):
+                yield m
+            rules = self._build_all_command_rules()
+            async for m in self._send_at_message(event, rules):
+                yield m
+        elif kind == "cancel":
+            async for m in self._do_cancel_animal(event):
+                yield m
+
+
     @filter.regex(r".*")
     async def _on_group_msg_check(self, event: AstrMessageEvent):
         """检测白名单群内的 @提及 和关键词，自动回复"""
@@ -700,6 +774,16 @@ class JusuoPlugin(Star):
         if not gid or gid not in self.whitelist_groups:
             if gid:
                 logger.debug(f"[居所] 群{gid}不在白名单中")
+            return
+
+        # 动物催产提醒指令：白名单群内无需@即可触发（与作物名检测同机制）
+        # 这样用户在群里直接发「提醒查询」「经验动物提醒」等就能响应，不必@机器人
+        animal_route = self._match_animal_command(text)
+        if animal_route:
+            event._jusuo_handled = True
+            logger.info(f"[居所] 白名单群{gid} 命中动物提醒指令 text='{text}'")
+            async for m in self._dispatch_animal_command(event, animal_route):
+                yield m
             return
 
         # 获取该群的独立设置（未设置则用全局默认值）
@@ -1273,6 +1357,178 @@ class JusuoPlugin(Star):
         async for result in self._do_crop_query(event, keyword):
             yield result
 
+    # ---- 动物催产提醒 ----
+    @filter.command("经验动物提醒")
+    async def cmd_animal_exp(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._subscribe_animal(event, "exp"):
+            yield m
+
+    @filter.command("经验动物")  # 模糊匹配别名 → 经验动物提醒
+    async def cmd_animal_exp_alias(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._subscribe_animal(event, "exp"):
+            yield m
+
+    @filter.command("金币动物提醒")
+    async def cmd_animal_gold(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._subscribe_animal(event, "gold"):
+            yield m
+
+    @filter.command("测试指令")
+    async def cmd_animal_test(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._subscribe_animal(event, "test"):
+            yield m
+
+    @filter.command("动物提醒查询")
+    async def cmd_animal_query(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._do_query_animal(event):
+            yield m
+
+    async def _do_query_animal(self, event: AstrMessageEvent):
+        """动物催产提醒查询核心逻辑（无双发防护，供指令/别名/监听统一调用）"""
+        import time
+        user_id = self._get_sender_qq(event)
+        if not user_id:
+            yield event.plain_result("❌ 无法获取你的账号信息，查询失败")
+            return
+        my_subs = [s for s in self._animal_reminders if s.get("user_id") == user_id]
+        if not my_subs:
+            msg = ("📭 你当前没有订阅任何动物催产提醒\n"
+                   "💡 发送「经验动物提醒」或「金币动物提醒」开始订阅")
+            async for m in self._send_result(event, msg):
+                yield m
+            return
+        now = time.time()
+        lines = ["🔔 你的动物催产提醒订阅："]
+        for s in my_subs:
+            info = ANIMAL_MODES.get(s.get("mode"), {})
+            name = info.get("name", "动物")
+            group_id = s.get("group_id", "?")
+            left = s.get("next_remind", 0) - now
+            left_str = "即将提醒" if left < 0 else self._format_duration(left)
+            lines.append(f"\n🐾 {name}（群 {group_id}）\n   下次提醒还剩：{left_str}")
+        lines.append("\n💡 发送「取消动物提醒」可退订")
+        msg = "\n".join(lines)
+        async for m in self._send_result(event, msg):
+            yield m
+
+    @filter.command("提醒查询")  # 模糊匹配别名 → 动物提醒查询
+    async def cmd_animal_query_alias(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._do_query_animal(event):
+            yield m
+
+    @filter.command("动物提醒")  # 模糊匹配别名 → 动物提醒查询，额外 @ 对应用户并告诉他全部查询指令规则
+    async def cmd_animal_fuzzy(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        # 1) 先按「动物提醒查询」显示订阅状态 / 剩余时间
+        async for m in self._do_query_animal(event):
+            yield m
+        # 2) 再 @ 对应用户，告诉他全部查询指令规则
+        rules = self._build_all_command_rules()
+        async for m in self._send_at_message(event, rules):
+            yield m
+
+    @filter.command("取消动物提醒")
+    async def cmd_animal_cancel(self, event: AstrMessageEvent, arg: str = ""):
+        if getattr(event, "_jusuo_handled", False):
+            return
+        async for m in self._do_cancel_animal(event):
+            yield m
+
+    async def _do_cancel_animal(self, event: AstrMessageEvent):
+        """动物催产提醒退订核心逻辑（无双发防护，供指令/监听统一调用）"""
+        user_id = self._get_sender_qq(event)
+        if not user_id:
+            yield event.plain_result("❌ 无法获取你的账号信息，退订失败")
+            return
+        before = len(self._animal_reminders)
+        self._animal_reminders = [s for s in self._animal_reminders if s.get("user_id") != user_id]
+        removed = before - len(self._animal_reminders)
+        self._save_animal_reminders()
+        if removed == 0:
+            msg = "📭 你当前没有订阅任何动物催产提醒"
+        else:
+            msg = f"✅ 已取消你的 {removed} 个动物催产提醒订阅"
+        async for m in self._send_result(event, msg):
+            yield m
+
+    async def _subscribe_animal(self, event: AstrMessageEvent, mode: str):
+        info = ANIMAL_MODES.get(mode)
+        if not info:
+            yield event.plain_result("❌ 未知提醒类型")
+            return
+        import time
+        user_id = self._get_sender_qq(event)
+        group_id = self._get_group_id(event)
+        # 白名单群自动检测：用户在哪个群发提醒指令，就自动把该群登记进白名单
+        auto_added = False
+        if group_id and group_id not in self.whitelist_groups:
+            self.whitelist_groups.add(group_id)
+            self._auto_whitelist_groups.add(group_id)
+            self._save_auto_whitelist()
+            auto_added = True
+            logger.info(f"[居所] 提醒指令自动检测：群 {group_id} 已加入白名单")
+        if not user_id:
+            yield event.plain_result("❌ 无法获取你的账号信息，订阅失败")
+            return
+        if not group_id:
+            yield event.plain_result("❌ 仅在群聊中可订阅（需要知道提醒发送到的群）")
+            return
+        now = time.time()
+        cycle_h = info["cycle_h"]
+        offset_h = info["offset_h"]
+        # 优先用秒级偏移（调试模式），否则用小时偏移
+        offset_sec = int(info.get("offset_sec", 0) or round(offset_h * 3600))
+        sub_id = f"{mode}:{user_id}:{group_id}"
+        existing = next((s for s in self._animal_reminders if s.get("id") == sub_id), None)
+        if existing:
+            existing["next_remind"] = now + offset_sec
+            existing["created"] = now
+            existing["cycle_h"] = 0  # 一次性，发完即删，不自循环
+            existing["offset_h"] = offset_h
+            existing["offset_sec"] = offset_sec
+            action = "已更新"
+        else:
+            self._animal_reminders.append({
+                "id": sub_id,
+                "mode": mode,
+                "user_id": user_id,
+                "group_id": group_id,
+                "created": now,
+                "next_remind": now + offset_sec,
+                "cycle_h": 0,  # 一次性提醒，发完即自动移除，不自循环
+                "offset_h": offset_h,
+                "offset_sec": offset_sec,
+            })
+            action = "已订阅"
+        self._save_animal_reminders()
+        remain = self._format_duration(offset_sec)
+        lines = [
+            f"✅ {action}催产提醒",
+            f"🐮 {info['name']}",
+            f"⏰ {remain} 后 @你",
+            f"🔁 仅提醒一次，要再提醒需重新发送指令",
+        ]
+        lines.append("")
+        lines.append("💡 再发一次可重新计时")
+        if auto_added:
+            lines.append(f"📍 本群已自动加入白名单（无需在配置里手动填群槽位）")
+        msg = "\n".join(lines)
+        async for m in self._send_result(event, msg):
+            yield m
+
     # ---- 查询统计 ----
 
     @filter.command("查询统计")
@@ -1318,75 +1574,69 @@ class JusuoPlugin(Star):
         return name
 
     async def _do_crop_query(self, event: AstrMessageEvent, name: str):
-        """从多个数据源查询作物"""
-        self._increment_crop_count(name)
-        yield event.plain_result(f"🌿 正在查询「{name}」收购信息")
-
-        # 解析为规范作物名，与轮询 key 对齐，避免历史最高错配 / 混作物
-        name = self._resolve_crop_name(name)
-
-        # 确保单价缓存
-        await self._ensure_unit_prices()
-        unit_price = self._get_unit_price(name)
-
-        # 数据源开关：群独立 > 全局
+        """从多个数据源查询作物（同作物并发查询去重：进行中重复查询只返回一次）"""
+        # 并发去重：同一群同一作物查询进行期间，重复请求直接忽略，只返回首次结果
         gid = self._get_group_id(event)
-        es1 = self._get_group_setting(gid, "enable_source1")
-        if es1 is None:
-            es1 = self.enable_source1
-        es2 = self._get_group_setting(gid, "enable_source2")
-        if es2 is None:
-            es2 = self.enable_source2
-        es3 = self._get_group_setting(gid, "enable_source3")
-        if es3 is None:
-            es3 = self.enable_source3
+        key = self._resolve_crop_name(name)
+        inflight_key = (gid, key)
+        if inflight_key in self._crop_inflight:
+            logger.info(f"[居所] 作物 {key} 查询进行中，忽略重复请求（并发去重）")
+            return
+        self._crop_inflight.add(inflight_key)
+        try:
+            self._increment_crop_count(name)
+            yield event.plain_result(f"🌿 正在查询「{name}」收购信息")
 
-        tasks = []
-        if es1:
-            tasks.append(("source1", self._fetch_source1_all("purchase")))
-        if es2:
-            tasks.append(("source2", self._fetch_hok_items(name)))
-        if es3:
-            tasks.append(("source3", self._fetch_wsjj_items(name)))
+            # 解析为规范作物名，与轮询 key 对齐，避免历史最高错配 / 混作物
+            name = key
 
-        # 并发请求
-        raw_results = {}
-        for tag, coro in tasks:
-            try:
-                raw_results[tag] = await coro
-            except Exception as e:
-                logger.warning(f"{tag} 查询异常: {e}")
-                raw_results[tag] = None
+            # 确保单价缓存
+            await self._ensure_unit_prices()
+            unit_price = self._get_unit_price(name)
 
-        # 归一化合并
-        all_items = []
-        seen_uids = set()
+            # 数据源开关：群独立 > 全局
+            gid = self._get_group_id(event)
+            es1 = self._get_group_setting(gid, "enable_source1")
+            if es1 is None:
+                es1 = self.enable_source1
+            es2 = self._get_group_setting(gid, "enable_source2")
+            if es2 is None:
+                es2 = self.enable_source2
+            es3 = self._get_group_setting(gid, "enable_source3")
+            if es3 is None:
+                es3 = self.enable_source3
 
-        # 源1：public-query 返回全量数据，按 crop_name 精确过滤
-        source1_data = raw_results.get("source1") or []
-        for item in source1_data:
-            if item.get("crop_name") != name:
-                continue
-            uid = str(item.get("uid", ""))
-            if uid and uid not in seen_uids:
-                seen_uids.add(uid)
-                all_items.append({
-                    "uid": uid,
-                    "crop_name": item.get("crop_name", name),
-                    "price_multiplier": float(item.get("price_multiplier") or 0),
-                    "quantity": int(item.get("quantity") or 0),
-                    "merchant": item.get("merchant_name", "?"),
-                    "source": SOURCE1_NAME,
-                    "unit_price": unit_price,
-                    "stall_level": int(item.get("residence_level") or 1),
-                    "guild_maxed": bool(item.get("guild_maxed") or False),
-                    "sale_price": int(item.get("sale_price") or 0),
-                })
+            tasks = []
+            if es1:
+                tasks.append(("source1", self._fetch_source1_all("purchase")))
+            if es2:
+                tasks.append(("source2", self._fetch_hok_items(name)))
+            if es3:
+                tasks.append(("source3", self._fetch_wsjj_items(name)))
 
-        if raw_results.get("source2"):
-            for item in raw_results["source2"]:
-                if item.get("capped"):
-                    continue
+            # 并发请求（asyncio.gather 真正并发：总耗时=最慢的单个源，而非三源串行累加。
+            # 修复热门/高价作物（如胭纱云棉）某源响应慢时整体被拖满的问题）
+            raw_results = {}
+            if tasks:
+                gathered = await asyncio.gather(
+                    *(coro for _tag, coro in tasks), return_exceptions=True
+                )
+                for (tag, _coro), res in zip(tasks, gathered):
+                    if isinstance(res, Exception):
+                        etype = type(res).__name__
+                        erepr = repr(res)
+                        logger.warning(f"{tag} 查询异常 [{etype}]: {erepr}")
+                        raw_results[tag] = None
+                    else:
+                        raw_results[tag] = res
+
+            # 归一化合并
+            all_items = []
+            seen_uids = set()
+
+            # 源1：public-query 返回全量数据，按 crop_name 精确过滤
+            source1_data = raw_results.get("source1") or []
+            for item in source1_data:
                 if item.get("crop_name") != name:
                     continue
                 uid = str(item.get("uid", ""))
@@ -1397,53 +1647,6 @@ class JusuoPlugin(Star):
                         "crop_name": item.get("crop_name", name),
                         "price_multiplier": float(item.get("price_multiplier") or 0),
                         "quantity": int(item.get("quantity") or 0),
-                        "merchant": item.get("merchant", "?"),
-                        "source": SOURCE2_NAME,
-                        "unit_price": unit_price,
-                        "stall_level": int(item.get("home_level") or 1),
-                        "guild_maxed": item.get("home_max_level", "") == "是",
-                        # 源2 自带精确售价 expected_income，直接采用，避免依赖 unit_prices 查表（查不到时为0）
-                        "sale_price": int(float(item.get("expected_income") or 0)),
-                    })
-
-        # 源3：家园站 — sold_out 或 markUsers非空 视为已达上限剔除
-        if raw_results.get("source3"):
-            for item in raw_results["source3"]:
-                if item.get("status") == "sold_out":
-                    continue
-                if item.get("markUsers"):  # 至少一人标记=已达上限
-                    continue
-                if item.get("cropName") != name:
-                    continue
-                uid = str(item.get("uid", ""))
-                if uid and uid not in seen_uids:
-                    seen_uids.add(uid)
-                    all_items.append({
-                        "uid": uid,
-                        "crop_name": item.get("cropName", name),
-                        "price_multiplier": float(item.get("multiplier") or 0),
-                        "quantity": int(item.get("quantity") or 0),
-                        "merchant": item.get("merchantName", "?"),
-                        "source": SOURCE3_NAME,
-                        "unit_price": float(item.get("unitPrice") or unit_price),
-                        "stall_level": int(item.get("stallLevel") or 1),
-                        "guild_maxed": item.get("baijiaMax") is True,
-                    })
-
-        # 模糊匹配 fallback（仅源1精确匹配无结果时）—— 仅接受与规范名完全一致的单一作物，杜绝混作物
-        if not all_items and source1_data:
-            for item in source1_data:
-                cn = (item.get("crop_name") or "").strip()
-                if not cn or cn != name.strip():
-                    continue
-                uid = str(item.get("uid", ""))
-                if uid and uid not in seen_uids:
-                    seen_uids.add(uid)
-                    all_items.append({
-                        "uid": uid,
-                        "crop_name": cn,
-                        "price_multiplier": float(item.get("price_multiplier") or 0),
-                        "quantity": int(item.get("quantity") or 0),
                         "merchant": item.get("merchant_name", "?"),
                         "source": SOURCE1_NAME,
                         "unit_price": unit_price,
@@ -1452,19 +1655,91 @@ class JusuoPlugin(Star):
                         "sale_price": int(item.get("sale_price") or 0),
                     })
 
-        if not all_items:
-            similar = [c for c in KNOWN_CROPS if name in c or c in name]
-            hint = "\n\n".join(f"  · {c}" for c in (similar or KNOWN_CROPS))
-            yield event.plain_result(
-                f"📭 未找到「{name}」的收购分享\n\n"
-                f"💡 可用作物：\n\n{hint}"
-            )
-            return
+            if raw_results.get("source2"):
+                for item in raw_results["source2"]:
+                    if item.get("crop_name") != name:
+                        continue
+                    # 已达上限(capped) 直接跳过，不显示（与网站一致）
+                    if item.get("capped"):
+                        continue
+                    uid = str(item.get("uid", ""))
+                    if uid and uid not in seen_uids:
+                        seen_uids.add(uid)
+                        all_items.append({
+                            "uid": uid,
+                            "crop_name": item.get("crop_name", name),
+                            "price_multiplier": float(item.get("price_multiplier") or 0),
+                            "quantity": int(item.get("quantity") or 0),
+                            "merchant": item.get("merchant", "?"),
+                            "source": SOURCE2_NAME,
+                            "unit_price": unit_price,
+                            "stall_level": int(item.get("home_level") or 1),
+                            "guild_maxed": item.get("home_max_level", "") == "是",
+                            # 源2 自带精确售价 expected_income，直接采用，避免依赖 unit_prices 查表（查不到时为0）
+                            "sale_price": int(float(item.get("expected_income") or 0)),
+                        })
 
-        text = self._format_crop_result(name, all_items)
-        async for m in self._send_result(event, text, recall_after=self.recall_seconds):
-            yield m
+            # 源3：家园站 — sold_out / markUsers非空 视为已达上限，直接剔除（与网站一致）
+            if raw_results.get("source3"):
+                for item in raw_results["source3"]:
+                    if item.get("cropName") != name:
+                        continue
+                    # 已售罄 / 被标记上限 直接跳过，不显示
+                    if item.get("status") == "sold_out" or item.get("markUsers"):
+                        continue
+                    uid = str(item.get("uid", ""))
+                    if uid and uid not in seen_uids:
+                        seen_uids.add(uid)
+                        all_items.append({
+                            "uid": uid,
+                            "crop_name": item.get("cropName", name),
+                            "price_multiplier": float(item.get("multiplier") or 0),
+                            "quantity": int(item.get("quantity") or 0),
+                            "merchant": item.get("merchantName", "?"),
+                            "source": SOURCE3_NAME,
+                            "unit_price": float(item.get("unitPrice") or unit_price),
+                            "stall_level": int(item.get("stallLevel") or 1),
+                            "guild_maxed": item.get("baijiaMax") is True,
+                        })
 
+            # 模糊匹配 fallback（仅源1精确匹配无结果时）—— 仅接受与规范名完全一致的单一作物，杜绝混作物
+            if not all_items and source1_data:
+                for item in source1_data:
+                    cn = (item.get("crop_name") or "").strip()
+                    if not cn or cn != name.strip():
+                        continue
+                    uid = str(item.get("uid", ""))
+                    if uid and uid not in seen_uids:
+                        seen_uids.add(uid)
+                        all_items.append({
+                            "uid": uid,
+                            "crop_name": cn,
+                            "price_multiplier": float(item.get("price_multiplier") or 0),
+                            "quantity": int(item.get("quantity") or 0),
+                            "merchant": item.get("merchant_name", "?"),
+                            "source": SOURCE1_NAME,
+                            "unit_price": unit_price,
+                            "stall_level": int(item.get("residence_level") or 1),
+                            "guild_maxed": bool(item.get("guild_maxed") or False),
+                            "sale_price": int(item.get("sale_price") or 0),
+                        })
+
+            if not all_items:
+                # 未找到该作物：极简 "404 Not Found" 风格提示
+                # 走 _send_result（单 text 段直发 adapter），与正常查询一致，
+                # 保证 snowluma 上 \n 正确渲染为换行（plain_result 直发不换行）
+                msg = f"📭 未找到「{name}」的收购\n\n🌱 Crops 404 Not Found"
+                async for m in self._send_result(event, msg, recall_after=0):
+                    yield m
+                return
+
+            text = self._format_crop_result(name, all_items)
+            async for m in self._send_result(event, text, recall_after=self.recall_seconds):
+                yield m
+
+        finally:
+            # 查询结束（成功 / 异常 / 提前返回）均清除进行中标记，允许后续同作物查询
+            self._crop_inflight.discard(inflight_key)
     # ==================== 插件页面 Web API（pages/dashboard） ====================
 
     def _register_page_apis(self, context):
@@ -1525,8 +1800,8 @@ class JusuoPlugin(Star):
             thresholds[_c] = int(self._poll_thresholds.get(_c, DEFAULT_POLL_THRESHOLDS.get(_c, 9_990_000)))
         return json_response({
             "plugin": "王世杰居所助手",
-            "version": "1.12",
-            "data_since": getattr(self, "version_date", "2026-07-12"),
+            "version": "1.13",
+            "data_since": getattr(self, "version_date", "2026-07-21"),
             "author": "亭子ww",
             "stats": {
                 "total_queries": total_queries,
@@ -1670,42 +1945,68 @@ class JusuoPlugin(Star):
         except ValueError:
             return 0.0
 
-    @staticmethod
-    def _normalize_source1_item(item: dict, data_type: str) -> dict:
-        """将 public-query 中文响应字段转为规范化的英文字段"""
+    def _normalize_source1_item(self, item: dict, data_type: str) -> dict:
+        """将 Supabase REST 原始字段转为规范化的英文字段（兼容原 public-query 输出结构）"""
         result = {
-            "uid": str(item.get("UID", "")),
-            "merchant_name": str(item.get("商人名称", "")),
-            "quantity": JusuoPlugin._safe_int(item.get("数量"), 0),
-            "price_multiplier": JusuoPlugin._parse_mult(item.get("收购倍率", 0)),
-            "sale_price": JusuoPlugin._safe_int(item.get("预计售价"), 0),
+            "uid": str(item.get("uid", "")),
+            "merchant_name": str(item.get("merchant_name", "")),
+            "quantity": JusuoPlugin._safe_int(item.get("quantity"), 0),
+            "price_multiplier": JusuoPlugin._parse_mult(item.get("price_multiplier", 0)),
+            "sale_price": JusuoPlugin._safe_int(item.get("sale_price"), 0),
         }
         if data_type == "purchase":
-            result["crop_name"] = str(item.get("作物名称", ""))
-            result["residence_level"] = JusuoPlugin._safe_int(item.get("摊位等级"), 1)
-            result["guild_maxed"] = item.get("百家满级") in (True, "是", "true", "True", 1)
+            result["crop_name"] = str(item.get("crop_name", ""))
+            result["residence_level"] = JusuoPlugin._safe_int(item.get("residence_level"), 1)
+            result["guild_maxed"] = bool(item.get("guild_maxed"))
         elif data_type == "ranch":
-            result["product_name"] = str(item.get("产品名称", ""))
-            result["guild_maxed"] = item.get("百家满级") in (True, "是", "true", "True", 1)
+            # 通过牧场产品预设表将 product_preset_id 还原为产品名
+            # （_load_ranch_presets 已在启动时缓存到 self._ranch_products_cache）
+            pid = item.get("product_preset_id")
+            result["product_name"] = self._ranch_products_cache.get(pid, pid) if pid else ""
+            result["guild_maxed"] = bool(item.get("guild_maxed"))
             result["residence_level"] = 1
         elif data_type == "furniture":
-            flist = item.get("在售家具列表", [])
-            if isinstance(flist, str):
-                flist = [f.strip() for f in flist.replace("，", ",").split(",") if f.strip()]
-            result["furniture_ids"] = flist
-            result["like_count"] = JusuoPlugin._safe_int(item.get("点赞数"), 0)
+            # 使用 furniture_names（家具名列表）以保证按家具名检索可用；
+            # 兼容旧字段 furniture_ids（UUID 列表）作为回退
+            fnames = item.get("furniture_names")
+            if not fnames:
+                fnames = item.get("furniture_ids") or []
+            if isinstance(fnames, str):
+                fnames = [f.strip() for f in fnames.replace("，", ",").split(",") if f.strip()]
+            result["furniture_ids"] = fnames
+            result["like_count"] = JusuoPlugin._safe_int(item.get("like_count"), 0)
         return result
 
+    def _source1_row_active(self, item: dict) -> bool:
+        """复刻网站/public-query 的可见性过滤：剔除售罄/过期/被举报条目"""
+        if item.get("is_limit_reached"):
+            return False
+        if item.get("is_reported"):
+            return False
+        exp = item.get("expires_at")
+        if exp:
+            try:
+                s = exp.replace("Z", "+00:00") if isinstance(exp, str) else str(exp)
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < datetime.now(timezone.utc):
+                    return False
+            except Exception:
+                pass
+        return True
+
     def _build_source1_headers(self) -> dict:
-        """构建 public-query 请求头（x-api-key + 浏览器UA + Referer 防反爬）"""
-        headers = {
-            "x-api-key": self.source1_api_key or "",
+        """构建 Supabase REST 请求头（anon key 认证；保留 UA/Referer 礼貌性头）"""
+        key = self.anon_key or ""
+        return {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Referer": "https://jusuo.playmmo.cn/",
         }
-        return headers
 
     def _extract_items_from_response(self, data, data_type: str) -> tuple[list, Optional[int]]:
         """从 public-query 响应中提取 items 列表和 total 值
@@ -1756,23 +2057,28 @@ class JusuoPlugin(Star):
     _hok_response_logged: bool = False
 
     async def _fetch_source1_page(
-        self, data_type: str, page: int = 1, page_size: int = 100, merchant: str = ""
+        self, data_type: str, page: int = 1, page_size: int = 1000, merchant: str = ""
     ) -> dict:
-        """调用 public-query 单页，返回 {"items": [...], "total": int|None, "has_next": bool}"""
-        if not self.source1_api_key:
+        """从 Supabase REST API 直连拉取单页（绕过已故障的 public-query 边缘函数）。
+        返回 {"items": [normalized...], "total": int|None, "has_next": bool}"""
+        table_map = {
+            "purchase": TABLE_RESIDENCE,
+            "ranch": TABLE_RANCH,
+            "furniture": TABLE_FURNITURE,
+        }
+        table = table_map.get(data_type)
+        if not table:
+            return {"items": None, "total": None, "has_next": False}
+        if not self.anon_key:
             if not self._warned_empty_api_key:
                 self._warned_empty_api_key = True
-                logger.warning("[居所] ⚠️ 数据源1 x-api-key 未配置，已跳过 public-query 请求，请在WebUI设置 source1_api_key")
+                logger.warning("[居所] 数据源1 anon_key 未配置，已跳过 REST 请求，请在WebUI设置 supabase_anon_key")
             return {"items": None, "total": None, "has_next": False}
-
-        params = {"type": data_type, "page": str(page), "page_size": str(page_size)}
-        if merchant:
-            params["merchant"] = merchant
-        url = f"{self.supabase_url}/functions/v1/public-query?" + "&".join(f"{k}={v}" for k, v in params.items())
-
+        offset = (page - 1) * page_size
+        url = f"{self.supabase_url}/rest/v1/{table}?select=*&limit={page_size}&offset={offset}"
         headers = self._build_source1_headers()
 
-        # 频率控制
+        # 频率控制（沿用原逻辑，避免触发 Supabase anon 限流）
         import time as _time_mod
         now_ts = _time_mod.time()
         since_last = now_ts - self._source1_last_call
@@ -1786,98 +2092,110 @@ class JusuoPlugin(Star):
                 try:
                     async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                         if resp.status == 429:
-                            logger.warning(f"public-query [429] 限流（attempt {attempt+1}/{max_retries+1}），等待后重试...")
+                            logger.warning(f"source1 REST [429] 限流（attempt {attempt+1}/{max_retries+1}），等待后重试...")
                             if attempt < max_retries:
                                 await asyncio.sleep(5 * (attempt + 1))
                                 continue
                             return {"items": None, "total": None, "has_next": False}
-                        if resp.status != 200:
-                            logger.warning(f"public-query [{resp.status}]: {(await resp.text())[:200]}")
+                        if resp.status == 401:
+                            body = (await resp.text())[:200]
+                            logger.info(f"source1 REST [401]: {body}（将尝试回退内置默认 key）")
+                            # 配置存储的 supabase_anon_key 可能覆盖了正确的默认 key，尝试用内置默认 key 一次性回退
+                            if self.anon_key != DEFAULT_ANON_KEY and DEFAULT_ANON_KEY:
+                                logger.info("[居所] 数据源1 REST 401，尝试用内置默认 anon key 回退...")
+                                fb_headers = dict(headers)
+                                fb_headers["apikey"] = DEFAULT_ANON_KEY
+                                fb_headers["Authorization"] = f"Bearer {DEFAULT_ANON_KEY}"
+                                async with session.get(url, headers=fb_headers, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
+                                    if resp2.status == 200:
+                                        logger.info("[居所] 数据源1 REST 已自动回退内置默认 anon key（配置中的 supabase_anon_key 无效，清除后可消除此提示）")
+                                        rows = await resp2.json()
+                                        break
+                                    else:
+                                        body2 = (await resp2.text())[:200]
+                                        logger.warning(f"source1 REST 回退也失败 [{resp2.status}]: {body2}")
+                                        return {"items": None, "total": None, "has_next": False}
+                            else:
+                                return {"items": None, "total": None, "has_next": False}
+                        elif resp.status != 200:
+                            body = (await resp.text())[:200]
+                            logger.warning(f"source1 REST [{resp.status}]: {body}")
+                            # 5xx 视为临时故障，重试一次
+                            if resp.status >= 500 and attempt < max_retries:
+                                await asyncio.sleep(2 * (attempt + 1))
+                                continue
                             return {"items": None, "total": None, "has_next": False}
-                        data = await resp.json()
-                        break
+                        else:
+                            rows = await resp.json()
+                            break
                 except Exception as e:
-                    logger.warning(f"public-query 请求失败: {e}")
+                    etype = type(e).__name__
+                    erepr = repr(e)
+                    logger.warning(f"source1 REST 请求失败 [{etype}]: {erepr}")
                     if attempt < max_retries:
                         await asyncio.sleep(2)
                         continue
                     return {"items": None, "total": None, "has_next": False}
 
-        # 首次打印响应结构
-        log_key = f"{data_type}"
-        if log_key not in self._source1_response_logged:
-            self._source1_response_logged.add(log_key)
-            if isinstance(data, dict):
-                logger.info(f"[居所] public-query type={data_type} 响应结构: keys={list(data.keys())}")
-            elif isinstance(data, list):
-                logger.info(f"[居所] public-query type={data_type} 响应结构: 直接列表, len={len(data)}")
+        if not isinstance(rows, list):
+            logger.warning(f"source1 REST 响应非列表: {type(rows)}")
+            return {"items": None, "total": None, "has_next": False}
 
-        # 提取是否有下一页
-        has_next = False
-        pagination = data.get("分页") if isinstance(data, dict) else None
-        if isinstance(pagination, dict):
-            has_next = pagination.get("是否有下一页", False) is True
-
-        raw_items, total = self._extract_items_from_response(data, data_type)
-        if raw_items is None:
-            return {"items": None, "total": total, "has_next": has_next}
-        normalized = [self._normalize_source1_item(it, data_type) for it in raw_items]
-        return {"items": normalized, "total": total, "has_next": has_next}
+        # 复刻网站/public-query 的过滤：剔除售罄/过期/被举报 条目
+        active = [r for r in rows if isinstance(r, dict) and self._source1_row_active(r)]
+        normalized = [self._normalize_source1_item(r, data_type) for r in active]
+        return {"items": normalized, "total": None, "has_next": len(rows) == page_size}
 
     async def _fetch_source1_all(
-        self, data_type: str, merchant: str = "", page_size: int = 100
+        self, data_type: str, merchant: str = "", page_size: int = 1000
     ) -> Optional[list]:
-        """拉取 public-query 全部页，返回 normalized 列表（带60秒缓存防限流）"""
+        """拉取 REST 全量（带60秒缓存防限流），返回 normalized 列表。
+        缓存按 data_type 共享；merchant 过滤在缓存命中后客户端执行，
+        以便「按商人查询」复用同一份全量缓存。"""
         import time as _time
-        cache_key = f"{data_type}:{merchant}:{page_size}"
+        # 缓存 key 不含 merchant：全量拉取后统一客户端过滤
+        cache_key = f"{data_type}:{page_size}"
         now = _time.time()
+        all_items = None
         if cache_key in self._source1_result_cache:
             cached_data, cached_time = self._source1_result_cache[cache_key]
             if now - cached_time < self._source1_cache_ttl:
                 logger.debug(f"[居所] source1 cache HIT: {cache_key} (age={now - cached_time:.1f}s)")
-                return cached_data.copy() if isinstance(cached_data, list) else cached_data
+                all_items = cached_data.copy() if isinstance(cached_data, list) else cached_data
 
-        all_items = []
-        page = 1
-        total_from_api = None
-
-        while True:
-            try:
-                result = await self._fetch_source1_page(data_type, page=page, page_size=page_size, merchant=merchant)
-            except Exception as e:
-                logger.warning(f"public-query _fetch_source1_all 调用失败: {e}\n{traceback.format_exc()}")
-                return None if page == 1 else all_items
-            if not isinstance(result, dict):
-                return None if page == 1 else all_items
-            items = result.get("items")
-            if items is None:
-                return None if page == 1 else all_items
-
-            if total_from_api is None and result.get("total") is not None:
-                total_from_api = result["total"]
-
-            if not items:
-                break
-            all_items.extend(items)
-
-            # 翻页判断：has_next 优先，fallback total/len < page_size
-            if result.get("has_next"):
-                page += 1
-            elif total_from_api is not None:
-                if len(all_items) >= total_from_api:
+        if all_items is None:
+            all_items = []
+            page = 1
+            guard = 0
+            while True:
+                guard += 1
+                if guard > 50:  # 安全上限，避免极端情况下死循环
+                    logger.warning("[居所] source1 翻页超过50页，强制停止")
+                    break
+                try:
+                    result = await self._fetch_source1_page(data_type, page=page, page_size=page_size)
+                except Exception as e:
+                    logger.warning(f"source1 REST _fetch_source1_all 调用失败: {e}\n{traceback.format_exc()}")
+                    return None if page == 1 else all_items
+                if not isinstance(result, dict):
+                    return None if page == 1 else all_items
+                items = result.get("items")
+                if items is None:
+                    return None if page == 1 else all_items
+                if not items:
+                    break
+                all_items.extend(items)
+                if not result.get("has_next"):
                     break
                 page += 1
-            elif len(items) < page_size:
-                break
-            else:
-                page += 1
+            logger.debug(f"[居所] source1 REST type={data_type}: 共 {len(all_items)} 条")
+            import time as _time2
+            self._source1_result_cache[cache_key] = (all_items.copy(), _time2.time())
 
-        logger.debug(f"[居所] public-query type={data_type}: 共 {len(all_items)} 条")
-        import time as _time2
-        self._source1_result_cache[cache_key] = (all_items.copy(), _time2.time())
+        # merchant 过滤（客户端，复用全量缓存）
+        if merchant:
+            all_items = [it for it in all_items if merchant in str(it.get("merchant_name", ""))]
         return all_items
-
-    # ==================== 源1辅助：牧场产品名缓存（REST API） ====================
 
     async def _load_ranch_presets(self):
         """从 Supabase REST API 查 ranch_product_presets，缓存 {preset_id: product_name}"""
@@ -1917,15 +2235,28 @@ class JusuoPlugin(Star):
                         self._ranch_product_names = sorted(set(self._ranch_products_cache.values()))
                         logger.info(f"[居所] 已加载牧场产品预设 {len(self._ranch_products_cache)} 条")
         except Exception as e:
-            logger.warning(f"[居所] ranch presets 加载失败: {e}")
+            etype = type(e).__name__
+            erepr = repr(e)
+            logger.warning(f"[居所] ranch presets 加载失败 [{etype}]: {erepr}")
 
     # ==================== HOK 数据源 ====================
 
     async def _fetch_hok_items(self, crop_name: str, limit: int = 0) -> Optional[list]:
-        """从 hokshijie.online 查询作物条目"""
+        """从 hokshijie.online 查询作物条目（带按作物结果缓存）"""
         if limit <= 0:
             limit = self.hok_items_limit
-        url = f"{self.hok_api}/api/items?crop={crop_name}&limit={limit}"
+        # HOK 的 crop= 参数服务端已失效（始终返回同一批最新上架，与作物名无关），
+        # 故改为：整窗最新上架拉取一次、按单一 key 缓存，合并时再由客户端按 crop_name 过滤。
+        # 这样既能避免把“炎霞辣椒数据”错存到每个作物名下，也能在窗口里确有该作物时正确显示。
+        hok_cache_key = f"__hok_window__:{limit}"
+        if hok_cache_key in self._hok_items_cache:
+            import time as _hokt
+            _hd, _ht = self._hok_items_cache[hok_cache_key]
+            _age = _hokt.time() - _ht
+            if _age < self._source23_cache_ttl:
+                logger.debug(f"[居所] HOK window 缓存命中 (age={_age:.1f}s)")
+                return _hd.copy() if isinstance(_hd, list) else _hd
+        url = f"{self.hok_api}/api/items?limit={limit}"
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
         ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -1968,7 +2299,12 @@ class JusuoPlugin(Star):
                             items = inner_data
                         else:
                             items = []
-                        logger.debug(f"[居所] HOK crop={crop_name}: 返回 {len(items)} 条 (limit={limit})")
+                        logger.debug(f"[居所] HOK window: 返回 {len(items)} 条 (limit={limit})")
+                        import time as _hokt2
+                        self._hok_items_cache[hok_cache_key] = (
+                            items.copy() if isinstance(items, list) else items,
+                            _hokt2.time(),
+                        )
                         return items
                     return data if isinstance(data, list) else None
             except Exception as e:
@@ -2014,8 +2350,16 @@ class JusuoPlugin(Star):
     # ==================== 数据源3: wsjjiayuan.cn ====================
 
     async def _fetch_wsjj_items(self, crop_name: str) -> Optional[list]:
-        """从 wsjjiayuan.cn 查询作物条目"""
+        """从 wsjjiayuan.cn 查询作物条目（带按作物结果缓存）"""
         from urllib.parse import quote
+        # 按作物缓存：命中则直接返回，跳过联网
+        if crop_name in self._wsjj_items_cache:
+            import time as _wsjjt
+            _wd, _wt = self._wsjj_items_cache[crop_name]
+            _age = _wsjjt.time() - _wt
+            if _age < self._source23_cache_ttl:
+                logger.debug(f"[居所] WSJJ crop={crop_name} 缓存命中 (age={_age:.1f}s)")
+                return _wd.copy() if isinstance(_wd, list) else _wd
         url = f"{self.wsjj_api}/api/farm?crop={quote(crop_name)}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -2031,6 +2375,11 @@ class JusuoPlugin(Star):
                     if isinstance(data, dict):
                         items = data.get("items", [])
                         logger.debug(f"[居所] WSJJ crop={crop_name}: 返回 {len(items)} 条")
+                        import time as _wsjjt2
+                        self._wsjj_items_cache[crop_name] = (
+                            items.copy() if isinstance(items, list) else items,
+                            _wsjjt2.time(),
+                        )
                         return items
                     return None
             except Exception as e:
@@ -2171,6 +2520,9 @@ class JusuoPlugin(Star):
                 "quantity": int(item.get("quantity", 0)),
                 "merchant": item.get("merchant_name", "?"),
                 "source": item.get("source", SOURCE1_NAME),
+                # 源1 牧场条目自带 API 算好的真实售价 sale_price，必须透传，
+                # 否则 _calc_item_income 会走 fallback 用作物单价（牧场产品不在作物单价表→0）。
+                "sale_price": int(item.get("sale_price", 0)),
                 "unit_price": ranch_unit_price,
                 "residence_level": int(item.get("residence_level") or 1),
                 "guild_maxed": bool(item.get("guild_maxed") or False),
@@ -2448,8 +2800,8 @@ class JusuoPlugin(Star):
     def _build_status_html(self) -> str:
         """生成「状态」指令的完整数据页 HTML（数据内嵌，无需 bridge），样式匹配浅蓝玻璃主题"""
         from datetime import datetime as _dt
-        ver = "1.12"
-        date_since = getattr(self, "version_date", "2026-07-12")
+        ver = "1.13"
+        date_since = getattr(self, "version_date", "2026-07-21")
         on_mark = lambda c: "✅" if c else "❌"
 
         # —— 运行概览 ——
@@ -2776,6 +3128,21 @@ class JusuoPlugin(Star):
         display_hour = hour if 1 <= hour <= 12 else (hour - 12 if hour > 12 else 12)
         return f"🕐 北京时间 {ampm} {display_hour}:{now.strftime('%M:%S')}"
 
+    @staticmethod
+    def _build_text_payload(text: str) -> list:
+        """将纯文本作为**单个** OneBot text 段下发（保留换行排版）。
+
+        关键：整段文本必须作为一个 text 段整体下发，内部的 ``\\n``
+        才会被 snowluma 正确渲染为换行。
+
+        之前曾按行拆成多个 text 段、用独立的 ``{"text": "\\n"}`` 段表示换行，
+        但 snowluma 新版会把这种独立的换行段错误替换/丢弃（表现为不换行、
+        换行变成逗号等），故统一改为单段发送。
+        同时单段的 text 字段是整个字符串（非空），也不会触发 NapCat 的
+        1400 空段校验。
+        """
+        return [{"type": "text", "data": {"text": text}}]
+
     async def _send_result(self, event: AstrMessageEvent, text: str, recall_after: int = 0):
         """群聊拆 text segment 数组直发 adapter → 私聊 plain_result
         recall_after > 0 时，发送后 N 秒自动撤回（仅 QQ 群 adapter 路径）"""
@@ -2786,11 +3153,7 @@ class JusuoPlugin(Star):
 
         # 仅 QQ 群（纯数字 gid）需要拆 segment 绕过管道，微信等平台走正常 plain_result
         if gid and gid.isdigit():
-            payload = []
-            for chunk in text.split("\n"):
-                if payload:
-                    payload.append({"type": "text", "data": {"text": "\n"}})
-                payload.append({"type": "text", "data": {"text": chunk}})
+            payload = self._build_text_payload(text)
 
             # 尝试从 event.message_obj 或 event 上找 adapter
             adapter = None
@@ -2852,6 +3215,68 @@ class JusuoPlugin(Star):
         except Exception as e:
             logger.debug(f"[居所] 撤回失败 msg_id={msg_id}: {e}")
 
+    @staticmethod
+    def _build_all_command_rules() -> str:
+        """构造「全部查询指令规则」说明文本（用于模糊指令 @ 提示）"""
+        return (
+            "📖 全部查询指令规则：\n"
+            "\n"
+            "【居所数据查询】\n"
+            "· 作物：炎霞辣椒 / 灿金云棉 / 曳紫云棉 / 旭日辣椒 / 胭纱云棉 / 星夜龙眼 / 蝶影莲子\n"
+            "· 商人 / 牧场 / 家具 / 交友墙 / 模板 / 搜索 / 高倍\n"
+            "\n"
+            "【动物催产提醒】\n"
+            "· 经验动物提醒 / 金币动物提醒 / 测试指令 → 订阅（12h / 15h / 10s 后首次 @ 你）\n"
+            "· 动物提醒查询 → 查剩余时间\n"
+            "· 取消动物提醒 → 退订\n"
+            "\n"
+            "【快捷模糊匹配】\n"
+            "· 经验动物 → 经验动物提醒\n"
+            "· 动物提醒 / 提醒查询 → 动物提醒查询\n"
+            "\n"
+            "【其它】居所 / 状态 / 帮助 / 查询统计"
+        )
+
+    async def _send_at_message(self, event: AstrMessageEvent, text: str):
+        """在群内 @ 发送者并附带文本（用于模糊指令的规则提示）。
+
+        与作物查询 ``_send_result`` 一致使用单 text 段（内部 ``\\n`` 正常换行），
+        并在最前插入一个 at 段指向发送者。取不到群/用户时回退 ``_send_result``。
+        """
+        user_id = self._get_sender_qq(event)
+        group_id = self._get_group_id(event)
+        if not group_id or not user_id:
+            async for m in self._send_result(event, text):
+                yield m
+            return
+        text = text.rstrip("\n") + f"\n\n{self._beijing_time_str()}"
+        qq_val = int(user_id) if user_id.isdigit() else user_id
+        payload = [
+            {"type": "at", "data": {"qq": qq_val}},
+            {"type": "text", "data": {"text": text}},
+        ]
+        adapter = await self._find_broadcast_adapter()
+        if not adapter:
+            async for m in self._send_result(event, text):
+                yield m
+            return
+        api = getattr(adapter, "api", None)
+        send_fn = getattr(api, "send_group_msg", None) if api else None
+        if not send_fn:
+            send_fn = getattr(adapter, "send_group_msg", None)
+        if not send_fn:
+            async for m in self._send_result(event, text):
+                yield m
+            return
+        try:
+            await send_fn(group_id=self._to_group_id(group_id), message=payload)
+            logger.info(f"[居所] 模糊指令规则已 @ {user_id} 发送到群 {group_id}")
+            yield event.plain_result("")
+        except Exception as e:
+            logger.warning(f"[居所] 模糊指令 @ 发送失败 gid={group_id}: {e}")
+            async for m in self._send_result(event, text):
+                yield m
+
     # ==================== 缓存 ====================
 
     async def _ensure_unit_prices(self):
@@ -2867,21 +3292,29 @@ class JusuoPlugin(Star):
             self._cache_time = now
 
     async def _ensure_ranch_products(self):
-        """从 public-query ranch 拉取全部牧场产品名缓存（用于列表展示/匹配）"""
+        """拉取全部牧场产品名缓存（用于列表展示/匹配）。
+        注意：牧场预设 id→产品名 映射保存在 self._ranch_products_cache，
+        由 _load_ranch_presets 在启动时填充（{preset_id: 产品名}）。
+        本函数【不可】覆盖它——否则 _normalize_source1_item 还原牧场
+        product_name 时会拿到 UUID 而非真实产品名，导致牧场查询「未找到」
+        或把 UUID 当产品名显示。
+        """
         import time
         now = time.time()
         if self._ranch_product_names and (now - self._cache_time) < 600:
             return
+        # 确保 preset→name 映射已就绪（source1 牧场条目靠它把 product_preset_id 还原为产品名）
+        if not self._ranch_products_cache:
+            await self._load_ranch_presets()
         data = await self._fetch_source1_all("ranch")
         if data:
-            # 从 ranch 条目中提取去重产品名
+            # 从 ranch 条目中提取去重产品名（此时 product_name 已由预设映射正确还原）
             name_set = set()
             for item in data:
                 pn = str(item.get("product_name", "")).strip()
                 if pn:
                     name_set.add(pn)
             self._ranch_product_names = sorted(name_set, key=len, reverse=True)
-            self._ranch_products_cache = {pn: pn for pn in self._ranch_product_names}  # 兼容旧字段（不再需要UUID）
             self._cache_time = now
             logger.info(f"[居所] 牧场产品缓存已加载 {len(self._ranch_product_names)} 个：{self._ranch_product_names}")
 
@@ -2951,8 +3384,8 @@ class JusuoPlugin(Star):
             item["_income"] = income
             item["_income_str"] = income_str
 
-        # 按百工币收入降序排序
-        data.sort(key=lambda x: x.get("_income", 0), reverse=True)
+        # 排序：可用(未标记上限)在前，按百工币收入降序；已达上限/售罄的排其后
+        data.sort(key=lambda x: (1 if x.get("_unavailable") else 0, -x.get("_income", 0)))
         display_count = min(total, 5)
 
         recall_hint = f" · {self.recall_seconds}s撤回" if self.recall_seconds > 0 else ""
@@ -2964,10 +3397,8 @@ class JusuoPlugin(Star):
         if rec:
             qty = rec.get("quantity", 0)
             inc = rec.get("income_str", "?")
-            ts = rec.get("ts", 0)
-            date_str = f" 📅 {time.strftime('%m-%d', time.localtime(ts))}" if ts else ""
             lines.append("")
-            lines.append(f"🏆 最高  📦{qty}  💰{inc}万{date_str}")
+            lines.append(f"🏆 最高  📦{qty}  💰{inc}万")
         elif data:
             lines.append("")
             lines.append("🏆 最高  📦xxx  💰xxx万")
@@ -2985,9 +3416,11 @@ class JusuoPlugin(Star):
             rank = f"{i+1:>2}."
             mult_str = f"✨x{mult:.1f}"
             qty_str = f"×{qty}"
+            reason = item.get("_unavailable", "")
+            tag = f" ⚠{reason}" if reason else ""
 
             items.append(
-                f"{rank} 💰{income_str:>5}百工币  {mult_str}  {qty_str}\n\n     UID {uid}"
+                f"{rank} 💰{income_str:>5}百工币  {mult_str}  {qty_str}{tag}\n\n     UID {uid}"
             )
 
         body = "\n\n".join(items)
@@ -3102,6 +3535,82 @@ class JusuoPlugin(Star):
                 except Exception as e:
                     logger.error(f"轮询异常: {e}")
             await asyncio.sleep(self.poll_interval_minutes * 60)
+
+    # ==================== 动物催产提醒循环 ====================
+    async def _animal_reminder_loop(self):
+        """独立后台循环：每30秒检查到期提醒并 @ 用户（不依赖高价轮播开关）"""
+        await asyncio.sleep(20)
+        while True:
+            try:
+                await self._check_animal_reminders()
+            except Exception as e:
+                logger.error(f"[居所] 动物催产提醒检查异常: {e}")
+            await asyncio.sleep(30)
+
+    async def _check_animal_reminders(self):
+        """扫描到期订阅，发送提醒后移除（一次性，不自循环）。"""
+        if not self._animal_reminders:
+            return
+        import time
+        now = time.time()
+        due = [s for s in self._animal_reminders if now >= s.get("next_remind", 0)]
+        if not due:
+            return
+        to_remove = []
+        changed = False
+        for sub in due:
+            ok = await self._send_animal_reminder(sub)
+            if not ok:
+                continue
+            to_remove.append(sub.get("id"))
+            changed = True
+        if to_remove:
+            self._animal_reminders = [s for s in self._animal_reminders if s.get("id") not in to_remove]
+        if changed:
+            self._save_animal_reminders()
+
+    async def _send_animal_reminder(self, sub: dict) -> bool:
+        """向订阅群 @ 用户发送催产提醒，成功返回 True"""
+        mode = sub.get("mode")
+        info = ANIMAL_MODES.get(mode, {})
+        name = info.get("name", "动物")
+        cycle_h = sub.get("cycle_h", 16)
+        user_id = str(sub.get("user_id", ""))
+        group_id = str(sub.get("group_id", ""))
+        if not group_id or not user_id:
+            logger.warning(f"[居所] 动物提醒订阅信息不完整，跳过: {sub}")
+            return False
+        # 整体作为单个 text 段（与作物查询 _send_result 一致）：
+        # 段内 \n 由 snowluma 渲染为换行；不使用前导 \n，
+        # 避免 at 段后的首个换行被吞 / 段内换行异常（手机端「换行有问题」根因）。
+        text = (
+            f"⏰ 你的「{name}」催产时间到啦！\n"
+            f"🐾 如需下次提醒，请重新发送订阅指令"
+        )
+        text = text.rstrip("\n") + f"\n\n{self._beijing_time_str()}"
+        qq_val = int(user_id) if user_id.isdigit() else user_id
+        payload = [
+            {"type": "at", "data": {"qq": qq_val}},
+            {"type": "text", "data": {"text": text}},
+        ]
+        adapter = await self._find_broadcast_adapter()
+        if not adapter:
+            logger.warning("[居所] 动物提醒：未找到可用 adapter")
+            return False
+        api = getattr(adapter, "api", None)
+        send_fn = getattr(api, "send_group_msg", None) if api else None
+        if not send_fn:
+            send_fn = getattr(adapter, "send_group_msg", None)
+        if not send_fn:
+            logger.warning("[居所] 动物提醒：adapter 无 send_group_msg")
+            return False
+        try:
+            await send_fn(group_id=self._to_group_id(group_id), message=payload)
+            logger.info(f"[居所] 动物催产提醒已 @ {user_id} 发送到群 {group_id}（{name}）")
+            return True
+        except Exception as e:
+            logger.warning(f"[居所] 动物催产提醒发送失败 gid={group_id}: {e}")
+            return False
 
     async def _poll_for_group(self, gid: str, source1_all: list, force: bool = False) -> Optional[str]:
         """为指定群生成独立播报（使用该群的作物列表和阈值，缺失则用全局）"""
@@ -3245,11 +3754,7 @@ class JusuoPlugin(Star):
         """向单个白名单群发送播报"""
         if not gid:
             return
-        payload = []
-        for chunk in message.split("\n"):
-            if payload:
-                payload.append({"type": "text", "data": {"text": "\n"}})
-            payload.append({"type": "text", "data": {"text": chunk}})
+        payload = self._build_text_payload(message)
         adapter = await self._find_broadcast_adapter()
         if not adapter:
             logger.warning(f"[居所] 广播到群{gid}: 未找到 adapter")
@@ -3472,6 +3977,67 @@ class JusuoPlugin(Star):
             logger.info(f"[居所] 作物'{crop_name}'历史最高价刷新：💰{income_str}万 量{int(item.get('quantity') or 0)}")
 
     # ==================== 作物查询次数统计（持久化，自本版日期起） ====================
+
+    # ==================== 动物催产提醒 ====================
+    def _load_animal_reminders(self):
+        """从文件恢复动物催产提醒订阅（重装/重载不丢失）"""
+        try:
+            if os.path.exists(self._animal_reminder_file):
+                with open(self._animal_reminder_file, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                self._animal_reminders = data.get("subscriptions", []) or []
+                logger.info(f"[居所] 已恢复动物催产提醒订阅：{len(self._animal_reminders)} 条")
+        except Exception as e:
+            logger.warning(f"[居所] 恢复动物催产提醒订阅失败: {e}")
+            self._animal_reminders = []
+
+    def _save_animal_reminders(self):
+        """将动物催产提醒订阅写入文件（持久化）"""
+        try:
+            data = {"subscriptions": self._animal_reminders}
+            with open(self._animal_reminder_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"[居所] 保存动物催产提醒订阅失败: {e}")
+
+    def _load_auto_whitelist(self) -> set:
+        """从文件恢复提醒指令自动检测到的白名单群（重装/重载不丢失）"""
+        try:
+            if os.path.exists(self._animal_whitelist_file):
+                with open(self._animal_whitelist_file, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                groups = set(str(g) for g in (data.get("groups", []) or []))
+                if groups:
+                    logger.info(f"[居所] 已恢复提醒指令自动检测白名单群：{groups}")
+                return groups
+        except Exception as e:
+            logger.warning(f"[居所] 恢复自动白名单群失败: {e}")
+        return set()
+
+    def _save_auto_whitelist(self):
+        """将提醒指令自动检测到的白名单群写入文件（持久化）"""
+        try:
+            data = {"groups": sorted(self._auto_whitelist_groups)}
+            with open(self._animal_whitelist_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"[居所] 保存自动白名单群失败: {e}")
+
+    @staticmethod
+    def _format_duration(sec: float) -> str:
+        """将秒数格式化为「X小时Y分」或「X秒」"""
+        sec = int(sec)
+        if sec <= 0:
+            return "0分钟"
+        if sec < 60:
+            return f"{sec}秒"
+        h = sec // 3600
+        m = (sec % 3600) // 60
+        if h and m:
+            return f"{h}小时{m}分"
+        if h:
+            return f"{h}小时"
+        return f"{m}分钟"
 
     def _resolve_data_dir(self) -> Path:
         """获取 AstrBot 规范的插件数据目录（独立于插件代码目录）。
@@ -3722,11 +4288,7 @@ class JusuoPlugin(Star):
             return
 
         # 构建 text segment 数组
-        payload = []
-        for chunk in message.split("\n"):
-            if payload:
-                payload.append({"type": "text", "data": {"text": "\n"}})
-            payload.append({"type": "text", "data": {"text": chunk}})
+        payload = self._build_text_payload(message)
 
         adapter = await self._find_broadcast_adapter()
         if not adapter:
@@ -3853,16 +4415,37 @@ class JusuoPlugin(Star):
         return None
 
     def _get_group_id(self, event: AstrMessageEvent) -> str:
-        """从事件中提取群/频道 ID"""
+        """从事件中提取群/频道 ID（兼容不同 AstrBot 版本与指令/监听事件结构）
+
+        要点：指令事件（@filter.command 触发）在部分 AstrBot 版本里
+        event.message_obj.group_id 为 None，此时不能回退到 get_session_id()
+        —— 它会返回带前缀的字符串（如 "group_711050897" / "OneBotV11_group_711050897"），
+        导致自动检测到的白名单群 id 带前缀，而普通群消息取出的是裸 id（"711050897"），
+        二者永远不相等 → 群进了白名单却始终命中不了（"白名单群检测失效"根因）。
+        因此优先用事件标准接口 event.get_group_id()（返回裸 id），session_id 仅作最后兜底并去掉前缀。
+        """
         msg = event.message_obj
-        for attr in ('group_id', 'chat_id', 'channel_id', 'guild_id', 'session_id'):
+        # 1) 优先从 message_obj 取（绝大多数群消息 / 监听事件）
+        for attr in ('group_id', 'chat_id', 'channel_id', 'guild_id'):
             val = getattr(msg, attr, None)
             if val:
                 return str(val)
+        # 2) 事件标准接口（部分版本 / 指令事件 message_obj 未带 group_id 时可用，返回裸 id）
+        try:
+            f = getattr(event, "get_group_id", None)
+            if callable(f):
+                v = f()
+                if v:
+                    return str(v)
+        except Exception:
+            pass
+        # 3) 最后兜底 session_id，并去掉平台/类型前缀（group_xxx / private_xxx / OneBotV11_group_123）
         try:
             sid = event.get_session_id()
             if sid:
-                return str(sid)
+                part = str(sid).split("_")[-1]
+                if part:
+                    return part
         except Exception:
             pass
         return ""
